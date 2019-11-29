@@ -21,7 +21,7 @@ module Embulk
           "json_column_name" => config.param("json_column_name", :string, default: "record"),
         }
 
-        @json_column = find_column(in_schema, task["json_column_name"])
+        task["json_column"] = find_column(in_schema, task["json_column_name"])
 
         yield(task, in_schema)
       end
@@ -30,7 +30,8 @@ module Embulk
         index = schema.index { |field| field.name == column_name }
         type = schema[index].type
 
-        { index: index, type: type }
+        # Even if we use symbol as key here, it will still converted to string.
+        { "index" => index, "type" => type }
       end
 
       private_class_method :find_column
@@ -39,6 +40,7 @@ module Embulk
         # initialization code:
         @schema = JSON.parse(File.open(task["schema_file"]).read)
         @optional_fields = task["optional_fields"]
+        @json_column = task["json_column"]
         @verified = false
       end
 
@@ -48,7 +50,7 @@ module Embulk
       def add(page)
         page.each do |record|
           verify!(record)
-          page_builder.add(record + add_columns)
+          page_builder.add(record)
         end
       end
 
@@ -61,12 +63,13 @@ module Embulk
         return unless preview?
 
         not_present = []
-        record = record[@json_column[:index]]
+        invalid_types = []
+        record = record[@json_column["index"]]
 
-        case @json_column[:type]
-        when :string
-          record = JSON.parse(column)
-        when :json
+        case @json_column["type"]
+        when "string"
+          record = JSON.parse(record)
+        when "json"
           # do nothing
         else
           raise ArgumentError.new("This filter can only work with json or string type")
@@ -123,7 +126,7 @@ module Embulk
 
       private
 
-      def report_error(not_present, invalid_types)
+      def report(not_present, invalid_types)
         puts "---------------------------------"
         puts "required_columns that supposed to be present:\n#{not_present.inspect}"
         puts
