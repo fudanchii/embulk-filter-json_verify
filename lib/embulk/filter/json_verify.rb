@@ -26,6 +26,15 @@ module Embulk
         yield(task, in_schema)
       end
 
+      def self.find_column(schema, column_name)
+        index = schema.index { |field| field.name == column_name }
+        type = schema[index].type
+
+        { index: index, type: type }
+      end
+
+      private_class_method :find_column
+
       def init
         # initialization code:
         @schema = JSON.parse(File.open(task["schema_file"]).read)
@@ -120,13 +129,6 @@ module Embulk
         puts
         puts "columns with type incompatible with bigquery schema:\n#{invalid_types.inspect}"
         puts "---------------------------------"
-      end
-
-      def find_column(schema, column_name)
-        index = schema.index { |field| field.name == column_name }
-        type = schema[index].type
-
-        { index: index, type: type }
       end
     end
   end
