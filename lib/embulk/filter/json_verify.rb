@@ -1,6 +1,5 @@
 module Embulk
   module Filter
-
     class JsonVerify < FilterPlugin
       Plugin.register_filter("json_verify", self)
 
@@ -19,15 +18,27 @@ module Embulk
           "schema_file" => config.param("schema_file", :string),
           "optional_fields" => config.param("optional_fields", :array, default: []),
           "json_column_name" => config.param("json_column_name", :string, default: "record"),
+          "json_schema_column" => config.param("json_schema_column", :string, default: "json_schema"),
+
+          # [{
+          #   name: "field_name at json_schema",
+          #   use_name: "field_name to use when checking json data",
+          #   use_type: "field_type to use when checking json data"
+          # }, ... ]
+          "override_fields" => config.param("override_fields", :array, default: [])
         }
 
         task["json_column"] = find_column(in_schema, task["json_column_name"])
+        task["json_schema"] = find_column(in_schema, task["json_schema_column"])
 
         yield(task, in_schema)
       end
 
       def self.find_column(schema, column_name)
         index = schema.index { |field| field.name == column_name }
+
+        raise ArgumentError.new("no such column: #{column_name} in schema, we only have: #{schema.map { |field| field.name }.inspect}")
+
         type = schema[index].type
 
         # Even if we use symbol as key here, it will still converted to string.
@@ -41,6 +52,8 @@ module Embulk
         @schema = JSON.parse(File.open(task["schema_file"]).read)
         @optional_fields = task["optional_fields"]
         @json_column = task["json_column"]
+        @json_schema = task["json_schema"]
+        @override_fields = task["override_fields"]
         @verified = false
       end
 
@@ -58,22 +71,14 @@ module Embulk
         page_builder.finish
       end
 
-      def verify!(record)
+      def verify!(columns)
         return if @verified
         return unless preview?
 
         not_present = []
         invalid_types = []
-        record = record[@json_column["index"]]
 
-        case @json_column["type"]
-        when "string"
-          record = JSON.parse(record)
-        when "json"
-          # do nothing
-        else
-          raise ArgumentError.new("This filter can only work with json or string type")
-        end
+        record = parse_json!(columns[@json_column["index"]], @json_column["type"])
 
         record_keys = record.keys
         @schema.each do |field|
@@ -85,19 +90,40 @@ module Embulk
             next
           end
 
-          # 2. Check whether the type between schema and
-          #    this data record is compatible.
           content = record[field["name"]]
-          unless COMPAT_TABLE[content.class.name].include?(field["type"])
-            invalid_types << {
-              field: field["name"],
-              data_type: content.class.name,
-              schema_type: field["type"],
-            }
-            next
+
+          # 2. Check if current field's data is nil
+          if content.nil?
+
+            # only parse def at first record, then reuse for the the rest.
+            @field_def ||= parse_json!(columns[@json_schema["index"]], @json_schema["type"])
+              .instance_eval { |fdef| override(fdef) } # poorman's yield_self
+              .detect { |fdef| fdef["name"] == field["name"] }
+
+            unless COMPAT_TABLE[@field_def["type"]].include?(field["type"])
+              invalid_types << {
+                field: field["name"],
+                data_type: content.class.name,
+                schema_type: field["type"],
+              }
+              next
+            end
+
+          else
+
+            # 3. Check whether the type between schema and
+            #    this data record is compatible.
+            unless COMPAT_TABLE[content.class.name].include?(field["type"])
+              invalid_types << {
+                field: field["name"],
+                data_type: content.class.name,
+                schema_type: field["type"],
+              }
+              next
+            end
           end
 
-          # 3. Check if string format is comply with TIMESTAMP
+          # 4. Check if string format is comply with TIMESTAMP
           if field["type"] == "TIMESTAMP" && content.is_a?(String)
             if content.match(TIMESTAMP_FORMAT).nil?
               invalid_types << {
@@ -126,12 +152,52 @@ module Embulk
 
       private
 
+      def parse_json(record, types)
+        case type
+        when "string"
+          JSON.parse(record)
+        when "json"
+          # do nothing
+        else
+          raise ArgumentError.new("This filter can only work with json or string type")
+        end
+      end
+
       def report(not_present, invalid_types)
-        puts "---------------------------------"
-        puts "required_columns that supposed to be present:\n#{not_present.inspect}"
-        puts
-        puts "columns with type incompatible with bigquery schema:\n#{invalid_types.inspect}"
-        puts "---------------------------------"
+        STDERR.puts "---------------------------------"
+        STDERR.puts "required_columns that supposed to be present:\n#{not_present.inspect}"
+        STDERR.puts
+        STDERR.puts "columns with type incompatible with bigquery schema:\n#{invalid_types.inspect}"
+        STDERR.puts "---------------------------------"
+      end
+
+      # override schema definition returned from input plugin
+      # to also consider added and typecasted columns
+      # override format:
+      # {
+      #   name: "field_name", use_name: "name to be used", use_type: "type to be used"
+      # }
+      #
+      # field_def format:
+      # {
+      #   name: "field_name", type: "field_type"
+      # }
+      #
+      # possible field_type:
+      # - string
+      # - integer
+      # - double
+      # - boolean
+      # - jsonobject
+      # - jsonarray
+      def override(field_def)
+        field_def.tap do |fd|
+          @override_fields.each do |ov|
+            field = fd.detect { |f| f["name"] == ov["name"] }
+            field["name"] = ov["use_name"] unless ov["use_name"].nil?
+            field["type"] = ov["use_type"] unless ov["use_type"].nil?
+          end
+        end
       end
     end
   end
