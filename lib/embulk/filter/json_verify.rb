@@ -37,7 +37,13 @@ module Embulk
       def self.find_column(schema, column_name)
         index = schema.index { |field| field.name == column_name }
 
-        raise ArgumentError.new("no such column: #{column_name} in schema, we only have: #{schema.map { |field| field.name }.inspect}")
+        if index.nil?
+          raise(
+            ArgumentError
+              .new("no such column: #{column_name} in schema, " +
+                   "we only have: #{schema.map { |field| field.name }.inspect}")
+          )
+        end
 
         type = schema[index].type
 
