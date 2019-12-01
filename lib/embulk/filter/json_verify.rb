@@ -9,6 +9,14 @@ module Embulk
         "FLoat"  => [ "FLOAT" ],
         "TrueClass"  => [ "BOOLEAN" ],
         "FalseClass" => [ "BOOLEAN" ],
+
+        # json schema
+        "string" =>  [ "STRING", "TIMESTAMP" ],
+        "integer" => [ "INTEGER", "FLOAT" ],
+        "boolean" => [ "BOOLEAN" ],
+        "double" =>  [ "FLOAT" ],
+        "jsonobject" => [ "STRING" ], # likely overidden as string
+        "jsonarray"  => [ "STRING" ], # likely overidden as string
       }
 
       TIMESTAMP_FORMAT = /\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d{1,4})? ((\+|-)\d{4}|UTC)\z/
@@ -102,14 +110,16 @@ module Embulk
           if content.nil?
 
             # only parse def at first record, then reuse for the the rest.
-            @field_def ||= parse_json!(columns[@json_schema["index"]], @json_schema["type"])
-              .instance_eval { |fdef| override(fdef) } # poorman's yield_self
-              .detect { |fdef| fdef["name"] == field["name"] }
+            @field_defs ||= begin
+              fdef = parse_json!(columns[@json_schema["index"]], @json_schema["type"])
+              override(fdef)
+            end
 
-            unless COMPAT_TABLE[@field_def["type"]].include?(field["type"])
+            field_def = @field_defs.detect { |f| f["name"] == field["name"] }
+            unless COMPAT_TABLE[field_def["type"]].include?(field["type"])
               invalid_types << {
                 field: field["name"],
-                data_type: content.class.name,
+                data_type: field_def["type"],
                 schema_type: field["type"],
               }
               next
@@ -158,12 +168,12 @@ module Embulk
 
       private
 
-      def parse_json(record, types)
+      def parse_json!(record, type)
         case type
         when "string"
           JSON.parse(record)
         when "json"
-          # do nothing
+          record
         else
           raise ArgumentError.new("This filter can only work with json or string type")
         end
