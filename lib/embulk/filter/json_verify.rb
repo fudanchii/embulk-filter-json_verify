@@ -95,6 +95,8 @@ module Embulk
         record = parse_json!(columns[@json_column["index"]], @json_column["type"])
 
         record_keys = record.keys
+
+        # loop over the bigquery schema
         @schema.each do |field|
 
           # 1. Check whether this field present in the data record.
@@ -116,13 +118,15 @@ module Embulk
             end
 
             field_def = @field_defs.detect { |f| f["name"] == field["name"] }
+
+            # append to invalid_types if defined type is not compatible with
+            # bigquery schema.
             unless COMPAT_TABLE[field_def["type"]].include?(field["type"])
               invalid_types << {
                 field: field["name"],
                 data_type: field_def["type"],
                 schema_type: field["type"],
               }
-              next
             end
 
           else
@@ -135,9 +139,8 @@ module Embulk
                 data_type: content.class.name,
                 schema_type: field["type"],
               }
-              next
             end
-          end
+          end # if content.nil?
 
           # 4. Check if string format is comply with TIMESTAMP
           if field["type"] == "TIMESTAMP" && content.is_a?(String)
@@ -149,7 +152,7 @@ module Embulk
               }
             end
           end
-        end
+        end # @schema.each
 
         if not_present.length > 0 || invalid_types.length > 0
           report(not_present, invalid_types)
@@ -160,10 +163,10 @@ module Embulk
 
       def preview?
         @preview ||= begin
-                       org.embulk.spi.Exec.isPreview()
-                     rescue java.lang.NullPointerException
-                       false
-                     end
+          org.embulk.spi.Exec.isPreview()
+        rescue java.lang.NullPointerException
+          false
+        end
       end
 
       private
